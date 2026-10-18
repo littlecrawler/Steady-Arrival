@@ -139,3 +139,7 @@ GitHub Actions 对 Windows 和 Linux 执行 Node 与 Python 测试。
 应用帮助记录和复盘，不诊断疾病，不根据 BMI 计算体脂，不保证减重速度。内置训练和饮食内容是可调整的初始安排；存在伤痛、疾病或持续不适时，需要专业评估。
 
 参考：[HealthHub 体重管理](https://www.healthhub.sg/well-being-and-lifestyle/exercise-and-fitness/manage_weight_healthy_way)、[CDC 身体活动](https://www.cdc.gov/healthy-weight-growth/physical-activity/)、[Mayo Clinic 腿举](https://www.mayoclinic.org/healthy-lifestyle/fitness/multimedia/leg-press/vid-20084684)。
+
+## 开发者的话
+
+创作的动机是因为市面上的运动减脂App实在是太难用了，而且动辄要求各种会员，他难用的原因不是因为功能少或者怎么样，而是因为没办法个性化满足用户需要，所以创作这个项目的目的是为了开源以便用户可以在这个框架上自己开发自己想要的功能
