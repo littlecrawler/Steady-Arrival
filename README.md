@@ -1,6 +1,10 @@
 # 稳步到站 · Steady Arrival
 
-一个本地优先的全栈健康记录应用，把每日记录、Apple 健康历史数据、训练计划和趋势图放在同一个地方。
+一个本地优先的全栈健康记录应用，把每日记录、Apple 健康历史数据、训练计划和趋势图放在同一个地方，并通过公开展示页见证长期改变。
+
+“薄肌理论”倡导：自我提升、长期主义和向内探寻。从改变身体开始，感受努力带来的回报，重新发现内在秩序，重获对生活的掌控。
+
+[理念与俱乐部海报](docs/lean-club.md) · [公开成长记录（启用 Pages 后）](https://littlecrawler.github.io/Steady-Arrival/)
 
 项目包含浏览器前端、Node.js REST API、持久化数据层、Apple Health XML 流式导入器和自动化测试。无需购买服务、注册账户或安装第三方运行依赖。
 
@@ -30,9 +34,9 @@ Windows 双击 **Start-App.cmd**，程序会打开本机页面。双击 **Stop-A
 
 - 今日总览、阶段进度、体重曲线、最近一周活动。
 - 体重、腰围、设备体脂、步数、饮食、摄入估算、蛋白质、睡眠、饥饿、精力、压力与训练记录。
-- 体重7日均值至少需要3天有记录；缺失值与零严格区分。
+- 体重图只显示一条实际记录曲线，同日手动值优先，不叠加均线；缺测不补零。统计卡中的7日均值至少需要3天有记录。
 - Apple 健康历史导入，按 UTC+8 日历日汇总并保留来源。
-- 饮食记录与设备活动热量分开显示；不推断确定的热量缺口或脂肪变化。
+- 内置热量收支计算器：每餐估算范围、全天消耗和差额；缺项、旧估算及导出当天不完整的设备消耗会明确标出。[计算方法与来源](docs/calorie-estimates.md)。
 - 历史表格分页、日期和文字筛选、CSV 导出。
 - 手动 JSON 备份与恢复；重合日期可保留现有数据或用备份替换。
 - 服务器校验、修订号冲突检测、原子替换与上一版文件副本。
@@ -71,6 +75,8 @@ Windows 双击 **Start-App.cmd**，程序会打开本机页面。双击 **Stop-A
 
 ## 数据与隐私
 
+本项目发起人已明确选择将真实健康指标、饮食与训练打卡公开，用于监督自己的长期执行。仓库中的 `public/progress.json` 是经过字段筛选的真实数据快照。
+
 | 路径 | 用途 | 是否进入 Git |
 | --- | --- | --- |
 | data/tracker.json | 手动记录、个人设置 | 否 |
@@ -78,11 +84,40 @@ Windows 双击 **Start-App.cmd**，程序会打开本机页面。双击 **Stop-A
 | data/*.previous.json | 最近一次替换前的副本 | 否 |
 | imports/、导出/、XML、ZIP | 原始健康导出 | 否 |
 | .runtime/ | 本地日志与演示副本 | 否 |
+| public/progress.json | 本人主动公开的真实健康指标、饮食与训练记录 | 是 |
+| dist/assets/ | AI 生成的薄肌俱乐部海报（简体与繁体） | 是 |
 | dist/、scripts/、tests/ | 程序与使用虚构数据的测试 | 是 |
 
-真实健康记录不上传 GitHub。备份文件也包含私人信息，请存放在自己信任的位置。上一版副本会随下一次保存更新，不能代替长期备份。
+公开快照包含每天的可用健康指标、个人阶段目标、饮食文字、当前每餐热量估算与份量假设、训练状态及动作感受；手动记录与设备来源分别保留。一般备注、个人背景说明、设备个人名称、设备 ID、运动轨迹和原始导出不进入公开快照。发布范围由 `scripts/export-public.mjs` 明确列出。饮食与训练备注请只填写愿意公开的内容。完整本地备份仍由本人保管。
 
 当前服务绑定127.0.0.1，校验 Host 与 Origin，无外部统计、字体或脚本请求。它面向单用户本机运行，没有账户系统和互联网部署所需的认证。GitHub 同步代码并不等于上线网站，也不适合直接把数据接口暴露到公网。
+
+## 公开监督与日常同步
+
+公开页使用同一套界面，展示真实指标趋势、每天的饮食训练详情、行动计划、薄肌理论及两版海报。访客只能查看，无法修改本地记录。页面明确标注快照更新时间、设备导出时间和数据缺失。
+
+日常先在本地应用保存记录，再双击 **Sync-GitHub.cmd**：它整理公开字段，只提交 `public/progress.json`，然后推送到本仓库的 main 分支。GitHub Actions 随后更新公开网站；它不是手机或本地应用的实时同步。运行同步需要本机已经配置好 GitHub SSH 访问。遇到远端领先时会停止，请先处理同步，脚本不会强制覆盖。
+
+手动整理与预览：
+
+    npm run export:public
+    npm run build:public
+    python -m http.server 8767 --bind 127.0.0.1 --directory .runtime/public-site
+
+打开 http://127.0.0.1:8767 。公开网站通过 `.github/workflows/pages.yml` 部署到 GitHub Pages；首次推送前，在仓库 **Settings → Pages → Source** 选择 **GitHub Actions**。如果先推送后开启，可在 **Actions → Publish public progress → Run workflow** 手动发布。[官方发布设置](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site)
+
+完整的 Node.js 后端负责本地录入和保存；GitHub Pages 发布经过本人选择的只读快照。
+
+## 手动提交与推送
+
+在项目目录完成文件检查后，可自行提交和推送：
+
+    git add .
+    npm run check:privacy
+    git commit -m "Update public progress, club vision and weight chart"
+    git push -u origin main
+
+后续只更新每日公开记录时，可双击 Sync-GitHub.cmd。首次网站发布前开启仓库 Pages 的 GitHub Actions 来源。
 
 ## 技术结构
 
@@ -91,6 +126,7 @@ Windows 双击 **Start-App.cmd**，程序会打开本机页面。双击 **Stop-A
       styles.css      响应式界面
       app.js          页面、表单与图表
       domain.js       校验、统计、计划、CSV
+      charts.js       单条实际数据曲线、日期去重和缺测处理
     server.mjs        本机 HTTP 服务与 REST API
     scripts/
       setup.mjs       仅在缺失时创建空白数据
