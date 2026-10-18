@@ -1,0 +1,16 @@
+# Local health records and exports must never enter Git history.
+/data/
+/imports/
+/导出/
+*.zip
+*.xml
+*.csv
+*.log
+.env
+.env.*
+!.env.example
+.runtime/
+tests/.tmp/
+node_modules/
+__pycache__/
+*.pyc
