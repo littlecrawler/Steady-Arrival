@@ -1,16 +1,21 @@
+import { renderTrend } from './charts.js';
+import { estimateFromForm, intakeEstimate } from './energy.js';
+import { renderEnergyPanel, renderEnergyResults, renderEnergyBasis, kcalRange } from './energy-ui.js';
 import {
-  localDate, shiftDate, weekday, weekStart, escapeHTML as esc, mean, rollingAverage,
-  summarize, mergeHealthRecords, planForDate, EXERCISES, NUMBER_FIELDS, validateRecord
+  localDate, isDate, displaySource, shiftDate, weekday, weekStart, escapeHTML as esc, mean,
+  summarize, mergeHealthRecords, planForDate, EXERCISES, NUMBER_FIELDS, validateRecord, recordsCSV
 } from './domain.js';
 
 const $ = selector => document.querySelector(selector);
 const main = $('#main');
+const publicMode = document.documentElement.dataset.mode === 'public';
+let publishedAt = '';
 let today = localDate();
 let state, health, records = [], view = 'overview', selectedDate = today, dirty = false, busy = false;
 let chartKey = 'weightKg', chartDays = 90, query = '', fromDate = '', toDate = '';
 let historyPage = 1;
 let toastTimer;
-const titles = { overview: '今日总览', record: '每日记录', history: '历史与趋势', plan: '计划与目标' };
+const titles = { overview: '今日总览', record: '每日记录', history: '历史与趋势', plan: '计划与目标', vision: '薄肌理论与海报' };
 const metrics = {
   weightKg: ['体重', 'kg', 1], waistCm: ['腰围', 'cm', 1], bodyFatPct: ['体脂率 · 设备估算', '%', 1],
   steps: ['步数 · 单来源汇总', '步', 0], distanceKm: ['步行与跑步距离', 'km', 2],
@@ -54,6 +59,7 @@ const rowFor = date => records.find(r => r.date === date);
 const latestFor = key => [...records].reverse().find(r => typeof r[key] === 'number' && r.date <= today);
 
 async function api(path, options = {}) {
+  if (publicMode) throw new Error('这是公开展示页，记录由本人在本地应用维护。');
   const response = await fetch(path, { cache: 'no-store', ...options, headers: { 'Content-Type': 'application/json', ...options.headers } });
   const result = await response.json();
   if (!response.ok) {
@@ -71,15 +77,22 @@ function toast(message, error = false) {
 }
 function setDirty(value) {
   dirty = value;
-  $('#save-status').textContent = value ? '有尚未保存的修改' : '本地记录已同步';
+  $('#save-status').textContent = publicMode ? '公开快照 · 只读' : value ? '有尚未保存的修改' : '本地记录已同步';
 }
 function merge() { records = mergeHealthRecords(state.records, health?.daily || []); }
 async function load() {
   const previousToday = today;
   today = localDate();
   if (selectedDate === previousToday && !dirty) selectedDate = today;
-  const result = await Promise.all([api('/api/state'), api('/api/health-data')]);
-  [state, health] = result;
+  if (publicMode) {
+    const response = await fetch('./progress.json', { cache: 'no-store' });
+    if (!response.ok) throw new Error('公开记录暂时未能读取，请稍后刷新。');
+    const snapshot = await response.json();
+    if (snapshot.kind !== 'public-progress' || !Array.isArray(snapshot.state?.records)) throw new Error('公开记录格式不正确。');
+    ({ state, health, publishedAt } = snapshot);
+  } else {
+    [state, health] = await Promise.all([api('/api/state'), api('/api/health-data')]);
+  }
   merge();
   setDirty(false);
 }
@@ -113,48 +126,7 @@ function ranges() {
 }
 function chart(key = 'weightKg') {
   const [label, unit, digits] = metrics[key];
-  const lower = chartDays ? shiftDate(today, 1 - chartDays) : '2000-01-01';
-  const samples = records.filter(r => r.date >= lower && r.date <= today && typeof r[key] === 'number');
-  if (!samples.length) return '<div class="empty-chart">' + icon('chart') + '<strong>这段时间还没有' + label + '记录</strong><p>有记录后，趋势会出现在这里。缺失日期不会算成零。</p></div>';
-  const width = 800, height = 250, left = 52, right = 24, top = 22, bottom = 36;
-  const dates = samples.map(r => Date.parse(r.date + 'T12:00:00Z'));
-  const start = chartDays ? Date.parse(lower + 'T12:00:00Z') : Math.min(...dates);
-  const end = Date.parse(today + 'T12:00:00Z');
-  const values = samples.map(r => r[key]);
-  let lo = Math.min(...values), hi = Math.max(...values);
-  const padding = Math.max((hi - lo) * .16, key === 'weightKg' ? 1 : hi * .05 || 1);
-  lo = Math.max(0, lo - padding); hi += padding;
-  const x = stamp => left + (stamp - start) / (end - start || 86400000) * (width - left - right);
-  const y = value => top + (hi - value) / (hi - lo || 1) * (height - top - bottom);
-  let svg = '<svg class="trend-svg" viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="' + esc(label) + '趋势，' + samples.length + '天有记录"><title>' + esc(label) + '，' + samples[0].date + ' 至 ' + samples.at(-1).date + '</title>';
-  for (let i = 0; i < 4; i++) {
-    const v = lo + (hi - lo) * i / 3, py = y(v);
-    svg += '<path d="M' + left + ' ' + py + 'H' + (width - right) + '" stroke="#e9ede7" stroke-dasharray="4 5"/><text x="' + (left - 12) + '" y="' + (py + 4) + '" text-anchor="end">' + number(v, digits) + '</text>';
-  }
-  for (let i = 0; i < 4; i++) {
-    const stamp = start + (end - start) * i / 3;
-    svg += '<text x="' + x(stamp) + '" y="' + (height - 10) + '" text-anchor="' + (i === 0 ? 'start' : i === 3 ? 'end' : 'middle') + '">' + shortDate(new Date(stamp).toISOString().slice(0, 10)) + '</text>';
-  }
-  // Gaps are not interpolated across multiple days; missing values remain missing.
-  const maxGap = key === 'weightKg' || key === 'bodyFatPct' ? 7 : 1;
-  for (let i = 1; i < samples.length; i++) {
-    if ((dates[i] - dates[i - 1]) / 86400000 <= maxGap) svg += '<path d="M' + x(dates[i - 1]) + ' ' + y(values[i - 1]) + 'L' + x(dates[i]) + ' ' + y(values[i]) + '" stroke="#78a58e" stroke-width="2" fill="none"/>';
-  }
-  if (key === 'weightKg') {
-    let last;
-    for (const row of samples) {
-      const avg = rollingAverage(records, row.date).value;
-      const point = avg === null ? null : { x: x(Date.parse(row.date + 'T12:00:00Z')), y: y(avg), date: row.date };
-      if (last && point && Date.parse(point.date) - Date.parse(last.date) <= 7 * 86400000) svg += '<path d="M' + last.x + ' ' + last.y + 'L' + point.x + ' ' + point.y + '" stroke="#294f3f" stroke-width="3" fill="none"/>';
-      last = point;
-    }
-  }
-  for (let i = 0; i < samples.length; i++) {
-    const row = samples[i], source = row.sources?.[key] || '记录';
-    svg += '<circle class="point" cx="' + x(dates[i]) + '" cy="' + y(values[i]) + '" r="' + (samples.length > 120 ? 2.2 : 4) + '" fill="#467e60" stroke="#fff" stroke-width="1.5"><title>' + row.date + ' · ' + number(row[key], digits) + ' ' + unit + ' · ' + esc(source) + '</title></circle>';
-  }
-  svg += '</svg>';
-  return '<div class="chart-wrapper">' + svg + '</div><div class="chart-foot"><span>' + samples.length + '天有记录 · ' + esc(unit) + '</span><span>' + (key === 'weightKg' ? '7日均值至少需要3天称重；称重条件可能不同' : '缺失不计零 · 当天数据可能尚未完整') + '</span></div>';
+  return renderTrend(records, key, { label, unit, digits, days: chartDays, today });
 }
 function metricCard(label, value, unit, foot, name) {
   return '<article class="metric"><div class="metric-top"><span>' + label + '</span><span class="metric-icon">' + icon(name) + '</span></div><div class="metric-value">' + value + '<small>' + unit + '</small></div><div class="metric-foot">' + foot + '</div></article>';
@@ -169,7 +141,14 @@ function taskPanel() {
   ];
   return '<section class="task-card"><div class="task-title"><span class="symbol">' + icon('leaf') + '</span><div><div class="eyebrow">ONE DAY AT A TIME</div><h2>今天的三件事</h2></div></div><p class="task-description">先完成今天，再根据记录调整。</p><div class="task-list">' +
     items.map(item => '<div class="task-item ' + (item.done ? 'done' : '') + '"><span>' + (item.done ? icon('check') : '') + '</span><div><strong>' + item.title + '</strong><p>' + item.text + '</p></div></div>').join('') +
-    '</div>' + button('记录今天 ' + icon('arrow'), 'today', 'primary') + '</section>';
+    '</div>' + button((publicMode ? '查看今天 ' : '记录今天 ') + icon('arrow'), 'today', 'primary') + '</section>';
+}
+function energyOptions(record, temporaryRecords = records) {
+  return { record, profile: state.profile, records: temporaryRecords, health };
+}
+function recentEnergyPanel() {
+  const record = [...state.records].sort((a, b) => b.date.localeCompare(a.date)).find(r => r.date <= today && (Object.values(r.meals || {}).some(Boolean) || typeof r.caloriesKcal === 'number'));
+  return record ? renderEnergyPanel(energyOptions(record), { compact: true }) : '';
 }
 function overview() {
   const s = summarize(records, state.profile, today), p = state.profile;
@@ -185,17 +164,17 @@ function overview() {
     const r = state.records.find(r => r.date === d), has = !!r;
     return '<button class="calendar-day ' + (has ? 'filled ' : '') + (d === today ? 'today' : '') + '" data-action="edit-date" data-date="' + d + '" aria-label="' + d + (has ? ' 有手动记录' : ' 尚无手动记录') + '" title="' + d + '">' + Number(d.slice(-2)) + '</button>';
   }).join('');
-  return heading(dateLabel(today) + ' · 我的日常', '把今天，记录清楚。', '体重、饮食、活动与恢复，放在同一个地方。', button(icon('plus') + ' 添加记录', 'today', 'primary')) +
+  return heading(dateLabel(today) + (publicMode ? ' · 公开成长记录' : ' · 我的日常'), publicMode ? '让行动，留下记录。' : '把今天，记录清楚。', '体重、饮食、活动与恢复，放在同一个地方。', button(icon('plus') + (publicMode ? ' 查看记录' : ' 添加记录'), 'today', 'primary')) +
     '<section class="hero"><div><div class="eyebrow">稳步前进</div><h2>下一站，' + number(p.milestoneKg) + ' kg</h2><p>长期目标 ' + number(p.targetWeightKg) + ' kg · 根据趋势调整节奏</p></div><div class="hero-progress"><div class="progress-meta"><span>阶段进度</span><strong>' + Math.round(s.progress * 100) + '%</strong></div><div class="progress-track"><span style="width:' + Math.round(s.progress * 100) + '%"></span></div><div class="progress-ends"><span>起点 ' + number(p.startingWeightKg) + '</span><span>阶段目标 ' + number(p.milestoneKg) + '</span></div></div></section>' +
     '<div class="metrics">' +
     metricCard('最新体重', number(s.latest?.weightKg), 'kg', (s.latest ? s.latest.date + ' · ' : '') + meanText, 'weight') +
-    metricCard('最近记录的步数', number(latestSteps?.steps, 0), '步', latestSteps ? latestSteps.date + ' · ' + (['手动记录', '对话记录'].includes(latestSteps.sources?.steps) ? latestSteps.sources.steps : latestSteps.date === today ? '截至导出时，可能未完整' : '当日单来源汇总') : '连接健康导出，或手动填写', 'activity') +
+    metricCard('最近记录的步数', number(latestSteps?.steps, 0), '步', latestSteps ? latestSteps.date + ' · ' + (['手动记录', '对话记录'].includes(latestSteps.sources?.steps) ? latestSteps.sources.steps : latestSteps.date >= (health?.exportDate?.slice(0, 10) || today) ? '截至导出时，可能未完整' : '当日单来源汇总') : '连接健康导出，或手动填写', 'activity') +
     metricCard('近7天睡眠', number(s.avgSleep), '小时', s.avgSleep === null ? '暂无睡眠记录；卧床不等于睡眠' : '只平均有记录的日期', 'moon') +
     metricCard('本周计划训练', s.workoutRecorded ? number(s.completed, 0) : '—', '次', '按手动完成记录统计 · 计划每周4次', 'calendar') +
-    '</div><div class="grid-main">' +
-    panel('体重的变化', '看一段时间的走向', '<div class="chart-legend"><span><i class="legend-dot"></i>当日记录</span><span><i class="legend-line"></i>7日均值</span></div>' + chart('weightKg'), ranges()) + taskPanel() +
+    '</div>' + recentEnergyPanel() + '<div class="grid-main">' +
+    panel('体重的变化', '看一段时间的走向', '<div class="chart-legend"><span><i class="legend-dot"></i>实际体重记录</span></div>' + chart('weightKg'), ranges()) + taskPanel() +
     '</div><div class="grid-bottom">' +
-    panel('最近一周的活动', '步数 · 单来源汇总；空白表示没有记录', '<div class="habit-bars">' + bars + '</div>') +
+    panel('最近一周的活动', '步数 · 单来源汇总；导出当天可能不完整，空白表示没有记录', '<div class="habit-bars">' + bars + '</div>') +
     panel('给记录留一点位置', '近28天 · 实心日期代表有手动记录', '<div class="calendar-grid">' + calendar + '</div><div class="support-line">' + icon('heart') + '<span><strong>空白可以留着。</strong>从下一条记录继续。</span></div>') + '</div>' +
     (health ? '<div class="notice"><strong>Apple 健康已连接</strong><p>导出时间 ' + esc(health.exportDate || '') + ' · ' + number(health.rawRecordCount, 0) + ' 条原始样本 · ' + number(health.daily.length, 0) + ' 个有数据的日期。它是导出文件的快照，后续数据需要重新导入。</p></div>' : '');
 }
@@ -214,6 +193,7 @@ function section(step, title, description, content, wide = false) {
   return '<section class="form-section ' + (wide ? 'wide' : '') + '"><div class="section-heading"><span class="step">' + step + '</span><div><h2>' + title + '</h2><p>' + description + '</p></div></div>' + content + '</section>';
 }
 function recordView() {
+  if (publicMode) return publicRecordView();
   const saved = state.records.find(r => r.date === selectedDate);
   const r = saved || { meals: {} }, plan = planForDate(selectedDate);
   const imported = health?.daily.find(d => d.date === selectedDate);
@@ -233,13 +213,18 @@ function recordView() {
     '<form id="record-form"><div class="form-grid">' + section('01', '身体记录', '尽量保持一致的测量条件', measurement) + section('02', '睡眠与感受', '恢复也是计划的一部分', recovery) +
     section('03', '今天吃了什么', '先记内容，不要求称重', meals, true) + section('04', '活动与训练', '计划和实际完成分别记录', training, true) +
     section('05', '还有什么想记下', '考试、外食、生病或其他影响因素', '<div class="field"><label class="sr-only" for="notes">备注</label><textarea id="notes" name="notes" maxlength="4000" rows="3" placeholder="写给下次调整计划时的自己">' + esc(r.notes) + '</textarea></div>', true) +
-    '</div><div class="save-bar"><div><strong>' + dateLabel(selectedDate) + '</strong><p id="form-message">空白表示未知，不会记成零。</p></div><button class="button primary" type="submit">' + icon('check') + ' 保存记录</button></div></form>';
+    '</div>' + renderEnergyPanel(energyOptions({ ...r, date: selectedDate }), { editable: true }) + '<div class="save-bar"><div><strong>' + dateLabel(selectedDate) + '</strong><p id="form-message">空白表示未知，不会记成零。</p></div><button class="button primary" type="submit">' + icon('check') + ' 保存记录</button></div></form>';
 }
 
 function historyRows() {
   const needle = query.trim().toLowerCase();
   return records.filter(r => (!fromDate || r.date >= fromDate) && (!toDate || r.date <= toDate) &&
     (!needle || [r.date, r.notes, r.exerciseNotes, ...Object.values(r.meals || {}), ...Object.values(r.sources || {})].join(' ').toLowerCase().includes(needle))).reverse();
+}
+function calorieTableCell(row) {
+  const manual = state.records.find(r => r.date === row.date);
+  const intake = manual ? intakeEstimate(manual) : null;
+  return intake?.range ? '约 ' + kcalRange(intake.range) + '<small>' + (intake.complete ? '全天估算' : '已记录部分 · 全天待确认') + '</small>' : number(row.caloriesKcal, 0);
 }
 function table() {
   const filtered = historyRows();
@@ -249,19 +234,19 @@ function table() {
   const visible = filtered.slice((historyPage - 1) * 30, historyPage * 30);
   return '<div class="history-meta"><span>' + filtered.length + ' 个日期有记录</span><span>设备汇总与手动记录合并显示；手动值优先</span></div><div class="table-scroll"><table><thead><tr><th scope="col">日期 / 来源</th><th scope="col">体重 kg</th><th scope="col">步数</th><th scope="col">摄入估算 kcal</th><th scope="col">睡眠 h</th>' + (extraKey ? '<th scope="col">' + esc(metrics[extraKey][0]) + ' ' + esc(metrics[extraKey][1]) + '</th>' : '') + '<th scope="col">计划训练记录</th><th scope="col">备注</th><th scope="col">操作</th></tr></thead><tbody>' +
     (visible.length ? visible.map(r => '<tr><td><strong class="table-date">' + r.date + '</strong><small>' + (r.manual && r.imported ? '手动 + Apple 健康' : r.manual ? '手动 / 对话' : 'Apple 健康') + '</small></td>' +
-      ['weightKg', 'steps', 'caloriesKcal', 'sleepHours'].map(k => '<td title="' + esc(r.sources?.[k] || '未记录') + '">' + number(r[k], k === 'weightKg' || k === 'sleepHours' ? 1 : 0) + '</td>').join('') +
-      (extraKey ? '<td title="' + esc(r.sources?.[extraKey] || '未记录') + '">' + number(r[extraKey], metrics[extraKey][2]) + '</td>' : '') +
-      '<td>' + (r.workoutStatus ? '<span class="tag ' + (r.workoutStatus === 'completed' ? 'green' : '') + '">' + (typeLabels[r.workoutType] || '') + ' ' + statusLabels[r.workoutStatus] + '</span>' : '—') + '</td><td class="table-note" title="' + esc(r.notes || '') + '">' + esc(r.notes || '—') + '</td><td><button class="table-link" data-action="edit-date" data-date="' + r.date + '">查看 / 编辑</button>' +
-      (r.manual ? '<button class="table-link delete-link" data-action="delete-date" data-date="' + r.date + '">删除手动记录</button>' : '') + '</td></tr>').join('') : '<tr><td colspan="' + (extraKey ? 9 : 8) + '" class="empty-cell">没有符合筛选的记录。</td></tr>') +
+      ['weightKg', 'steps', 'caloriesKcal', 'sleepHours'].map(k => '<td title="' + esc(displaySource(r.sources?.[k], '未记录')) + '">' + (k === 'caloriesKcal' ? calorieTableCell(r) : number(r[k], k === 'weightKg' || k === 'sleepHours' ? 1 : 0)) + '</td>').join('') +
+      (extraKey ? '<td title="' + esc(displaySource(r.sources?.[extraKey], '未记录')) + '">' + number(r[extraKey], metrics[extraKey][2]) + '</td>' : '') +
+      '<td>' + (r.workoutStatus ? '<span class="tag ' + (r.workoutStatus === 'completed' ? 'green' : '') + '">' + (typeLabels[r.workoutType] || '') + ' ' + statusLabels[r.workoutStatus] + '</span>' : '—') + '</td><td class="table-note" title="' + esc(r.notes || '') + '">' + esc(r.notes || '—') + '</td><td><button class="table-link" data-action="edit-date" data-date="' + r.date + '">' + (publicMode ? '查看详情' : '查看 / 编辑') + '</button>' +
+      (r.manual && !publicMode ? '<button class="table-link delete-link" data-action="delete-date" data-date="' + r.date + '">删除手动记录</button>' : '') + '</td></tr>').join('') : '<tr><td colspan="' + (extraKey ? 9 : 8) + '" class="empty-cell">没有符合筛选的记录。</td></tr>') +
     '</tbody></table></div><div class="history-meta"><span>第 ' + historyPage + ' / ' + pages + ' 页 · 每页最多30天</span><div class="actions">' +
     button('上一页', 'previous-page', 'small', historyPage === 1 ? 'disabled' : '') +
     button('下一页', 'next-page', 'small', historyPage === pages ? 'disabled' : '') + '</div></div>';
 }
 function historyView() {
   const selection = '<select id="metric-select" aria-label="选择趋势指标">' + Object.entries(metrics).map(([key, [label]]) => '<option value="' + key + '" ' + (key === chartKey ? 'selected' : '') + '>' + label + '</option>').join('') + '</select>';
-  return heading('YOUR HISTORY', '变化，留在记录里。', '真实样本、可追溯的来源，以及允许存在的空白。', '<a class="button" href="/api/export?format=csv" download>' + icon('download') + ' 导出全部 CSV</a>') +
+  return heading('YOUR HISTORY', '变化，留在记录里。', '真实样本、可追溯的来源，以及允许存在的空白。', publicMode ? button(icon('download') + ' 导出公开 CSV', 'public-csv') : '<a class="button" href="/api/export?format=csv" download>' + icon('download') + ' 导出全部 CSV</a>') +
     panel('指标趋势', '体脂、活动热量等设备指标包含测量或模型误差', chart(chartKey), '<div class="chart-controls">' + selection + ranges() + '</div>', 'history-chart') +
-    '<section class="panel"><div class="panel-header"><div><h2>每日记录表</h2><p>点击一个日期，查看详情或补充记录</p></div></div><div class="panel-body"><div class="history-controls"><label class="search"><span class="sr-only">搜索记录</span><input id="history-search" type="search" placeholder="搜索日期、饮食、备注或来源" value="' + esc(query) + '"></label><label class="filter-input">从 <input id="history-from" type="date" value="' + fromDate + '"></label><label class="filter-input">至 <input id="history-to" type="date" value="' + toDate + '"></label>' + button('清除筛选', 'clear-filters', 'small') + '</div><div id="history-table">' + table() + '</div></div></section>' +
+    '<section class="panel"><div class="panel-header"><div><h2>每日记录表</h2><p>' + (publicMode ? '点击日期查看公开的饮食、训练和恢复记录' : '点击一个日期，查看详情或补充记录') + '</p></div></div><div class="panel-body"><div class="history-controls"><label class="search"><span class="sr-only">搜索记录</span><input id="history-search" type="search" placeholder="搜索日期、饮食、备注或来源" value="' + esc(query) + '"></label><label class="filter-input">从 <input id="history-from" type="date" value="' + fromDate + '"></label><label class="filter-input">至 <input id="history-to" type="date" value="' + toDate + '"></label>' + button('清除筛选', 'clear-filters', 'small') + '</div><div id="history-table">' + table() + '</div></div></section>' +
     (health ? '<div class="notice"><strong>导入说明</strong><p>' + esc(health.method?.cumulative || '') + '</p><p>' + esc(health.method?.sleep || '') + '</p><p>' + esc(health.method?.energy || '') + '</p><p>' + esc(health.method?.workouts || '') + '</p></div>' : '');
 }
 
@@ -286,28 +271,50 @@ function planView() {
     '</div><p class="hint">目标可以调整；应用不会根据目标生成强制完成日期。</p><p id="profile-error" class="form-error" role="alert"></p><button type="submit" class="button primary">保存设置</button></form>';
   const data = '<div class="data-actions"><a class="button" href="/api/export" download>' + icon('download') + ' 备份手动记录与设置</a>' +
     button('恢复 / 合并手动记录备份', 'import-json') + '<a class="button" href="/api/health-export" download>备份 Apple 健康汇总</a>' +
-    button('重新读取本地 Apple 健康 XML', 'import-health') + '</div><p class="data-note">重新导入前，把新版导出 XML 放入项目 imports 文件夹，并移走旧导出。数据仅保存在本机；GitHub 只同步项目代码和虚构演示数据。两种备份包含私人信息，请自行妥善保管。</p>' +
+    button('重新读取本地 Apple 健康 XML', 'import-health') + '</div><p class="data-note">重新导入前，把新版导出 XML 放入项目 imports 文件夹，并移走旧导出。本人选择公开后，可双击 Sync-GitHub.cmd 发布指标、饮食与训练快照；一般备注、设备名称和原始 XML 保留在本地。饮食和训练备注会公开，请只填写愿意分享的内容。</p>' +
     (health ? '<p class="data-note">上次健康导出：' + esc(health.exportDate) + '<br>导入汇总：' + health.daily.length + ' 天，' + health.workoutCount + ' 次设备运动记录。设备记录不会自动勾选计划完成。</p>' : '<p class="data-note">尚未导入 Apple 健康数据。</p>');
   return heading('YOUR ROUTINE', '让计划，适合你的生活。', '每周4次训练，第5次可选；先从能持续执行的强度开始。') +
-    '<div class="plan-layout"><div class="stack">' + panel('本周安排', '初始适应计划 · 根据实际恢复再调整', schedule) + panel('力量日 · 每个动作3组', '周一 / 周四 · 45–60分钟', exercise) + panel('个人设置', '修改后即时用于图表与阶段进度', profile) + '</div><div class="stack">' +
-    panel('饮食参考', '估算需要记录来校准', food) + panel('数据与备份', '本地保存，可以导出', data) +
+    '<div class="plan-layout"><div class="stack">' + panel('本周安排', '初始适应计划 · 根据实际恢复再调整', schedule) + panel('力量日 · 每个动作3组', '周一 / 周四 · 45–60分钟', exercise) + (publicMode ? panel('本阶段目标', '根据记录调整节奏', '<p>起点 ' + number(p.startingWeightKg) + ' kg · 阶段目标 ' + number(p.milestoneKg) + ' kg · 长期目标 ' + number(p.targetWeightKg) + ' kg</p>') : panel('个人设置', '修改后即时用于图表与阶段进度', profile)) + '</div><div class="stack">' +
+    panel('饮食参考', '估算需要记录来校准', food) + (publicMode ? panel('公开数据', '由本人从本地应用发布的快照', '<p>记录允许留空，设备运动时段不会自动算作完成计划。健康导出时间：' + esc(health?.exportDate || '暂无') + '</p><a class="button" href="./progress.json" download>下载公开记录</a>') : panel('数据与备份', '本地保存，可以导出', data)) +
     panel('怎么判断是否需要调整', '每周一起看趋势', '<ul class="note-list"><li>尽量比较相似条件下的称重；至少3天再计算周均值。</li><li>有几周较完整的记录后，再结合围度、训练恢复、饥饿和精力判断。</li><li>体重没有立即下降时，不自动追加运动或进一步少吃。</li><li>长期反复减重反弹，可以让医生或营养师一起评估可持续的方案。</li></ul><div class="source-links"><a href="https://www.healthhub.sg/well-being-and-lifestyle/exercise-and-fitness/manage_weight_healthy_way" target="_blank" rel="noreferrer">HealthHub · 健康体重管理 ↗</a><a href="https://www.cdc.gov/healthy-weight-growth/physical-activity/" target="_blank" rel="noreferrer">CDC · 活动与体重管理 ↗</a></div>') +
     '</div></div>';
 }
+function publicRecordView() {
+  const r = rowFor(selectedDate);
+  const mealLabels = { breakfast: '早餐', lunch: '午餐', dinner: '晚餐', snacks: '零食 / 饮料' };
+  const meals = Object.entries(mealLabels).map(([key, label]) => '<div class="food-rule"><strong>' + label + '</strong><p>' + esc(r?.meals?.[key] || '尚未记录') + '</p></div>').join('');
+  const values = Object.entries(metrics).filter(([key]) => typeof r?.[key] === 'number').map(([key, [label, unit, digits]]) => '<tr><th scope="row">' + esc(label) + '</th><td>' + number(r[key], digits) + ' ' + unit + '</td><td>' + esc(displaySource(r.sources?.[key], '手动记录')) + '</td></tr>').join('');
+  return heading('DAILY LOG · PUBLIC', dateLabel(selectedDate), '由本人填写与设备导出组成；空白表示尚无记录。') +
+    '<div class="form-toolbar"><label class="date-control" for="record-date">查看日期 <input id="record-date" type="date" value="' + selectedDate + '" min="2000-01-01" max="' + today + '"></label><span class="tag">公开记录 · 只读</span></div>' +
+    '<div class="grid-bottom">' + panel('饮食记录', '实际吃了什么', meals) +
+    panel('训练与感受', '只按本人实际填写的完成情况统计', '<div class="food-rule"><strong>实际训练</strong><p>' + esc(typeLabels[r?.workoutType] || '尚未记录') + ' · ' + esc(statusLabels[r?.workoutStatus] || '尚未记录') + '</p></div><div class="food-rule"><strong>动作与感受</strong><p>' + esc(r?.exerciseNotes || '尚未记录') + '</p></div><p>晚餐：' + ({ ate: '已吃晚餐', skipped: '未吃晚餐', not_yet: '尚未到晚餐时间' }[r?.dinnerStatus] || '尚未记录') + '</p>') + '</div>' +
+    panel('当天指标', r?.weightContext === 'reported' ? '体重为对话报告，称重条件未确认' : '每个指标保留来源；设备估算不代表医学结论', '<div class="table-scroll"><table><thead><tr><th>指标</th><th>数值</th><th>来源</th></tr></thead><tbody>' + (values || '<tr><td colspan="3">这一天尚无指标记录。</td></tr>') + '</tbody></table></div>') + renderEnergyPanel(energyOptions(state.records.find(row => row.date === selectedDate) || { date: selectedDate, meals: {} }));
+}
+function visionView() {
+  return heading('LEAN BODY. STRONG MIND.', '薄肌理论', '从改变身体开始，重新发现内在秩序。') +
+    '<div class="vision-layout"><div class="stack">' + panel('我们的理念', '项目发起人的原文', '<blockquote class="manifesto"><p>“薄肌理论”倡导：自我提升、长期主义和向内探寻。</p><p>从改变身体开始，感受努力带来的回报，重新发现内在秩序，重获对生活的掌控。</p></blockquote><div class="vision-values"><span>自我提升</span><span>长期主义</span><span>向内探寻</span></div>') +
+    panel('多运动。多思考。做有复利的事。', '把理念放进每天的行动', '<p class="nutrition-copy">一顿正常的饭，一次按计划的训练，一条真实的记录。从今天做得到的事情开始。</p><div class="actions"><a class="button primary" href="#history" data-view="history">查看真实记录</a><a class="button" href="#plan" data-view="plan">查看行动计划</a></div>') + '</div><figure class="poster-panel"><a href="./assets/lean-club-simplified.png" target="_blank" rel="noreferrer"><img class="club-poster" src="./assets/lean-club-simplified.png" width="1024" height="1536" alt="香港理工大学薄肌俱乐部海报：夕阳校园、LEAN CLUB，以及多运动、多思考、做有复利的事。"></a><figcaption>AI 生成的俱乐部形象海报 · 图中人物不是个人身体变化照片。</figcaption><div class="actions"><a class="button" href="./assets/lean-club-simplified.png" download>下载简体版</a><a class="button" href="./assets/lean-club-traditional.png" download>下载繁体版</a></div></figure></div>';
+}
 function render() {
+  const pageURL = new URL(location.href);
+  pageURL.hash = view;
+  if (view === 'record') pageURL.searchParams.set('date', selectedDate); else pageURL.searchParams.delete('date');
+  history.replaceState(null, '', pageURL);
   document.querySelectorAll('[data-view]').forEach(el => {
     const active = el.dataset.view === view;
     el.classList.toggle('active', active);
     if (active) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
   });
   $('#view-label').textContent = titles[view];
-  main.innerHTML = (state.profile.isDemo ? '<div class="notice" role="status"><strong>虚构演示数据</strong> · 所有样例均由程序生成，不代表真实用户或减脂效果。编辑仅影响演示副本。</div>' : '') + ({ overview, record: recordView, history: historyView, plan: planView })[view]();
+  const publicNotice = publicMode ? '<div class="notice public-notice"><strong>真实公开记录 · 访客只读</strong><p>更新于 ' + esc(new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Hong_Kong', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(publishedAt))) + '（新加坡 / 香港时间）。这是发布时的快照。<a href="#vision" data-view="vision">了解薄肌理论与海报 ↗</a></p></div>' : '';
+  main.innerHTML = publicNotice + (state.profile.isDemo ? '<div class="notice" role="status"><strong>虚构演示数据</strong> · 所有样例均由程序生成，不代表真实用户或减脂效果。编辑仅影响演示副本。</div>' : '') + ({ overview, record: recordView, history: historyView, plan: planView, vision: visionView })[view]();
 }
 async function saveRecord(form) {
   const values = Object.fromEntries(new FormData(form));
   const prior = state.records.find(r => r.date === selectedDate);
   const meals = Object.fromEntries(['breakfast', 'lunch', 'dinner', 'snacks'].map(key => [key, values['meal-' + key]]));
-  const record = validateRecord({ ...values, date: selectedDate, meals, source: prior?.source || 'manual' });
+  const record = validateRecord({ ...prior, ...values, date: selectedDate, meals, source: prior?.source || 'manual' });
+  record.calorieEstimate = estimateFromForm(record, values, prior?.calorieEstimate);
   state = await api('/api/records/' + selectedDate, { method: 'PUT', body: JSON.stringify({ revision: state.revision, record }) });
   merge(); setDirty(false); render(); toast('已保存 ' + selectedDate + ' 的记录');
 }
@@ -331,8 +338,39 @@ document.addEventListener('submit', async event => {
     toast(error.message, true);
   } finally { busy = false; submit.disabled = false; }
 });
+function updateEnergyPreview(changed) {
+  const form = $('#record-form');
+  if (!form || !$('#energy-results')) return;
+  const key = changed.name?.startsWith('meal-') ? changed.name.slice(5) : changed.name === 'dinnerStatus' ? 'dinner' : '';
+  if (key) {
+    const food = form.elements['meal-' + key].value.trim();
+    form.elements['energy-food-' + key].value = food;
+    $('#energy-label-' + key).textContent = food || '先在上方记录吃了什么';
+    const disabled = !food || key === 'dinner' && form.elements.dinnerStatus.value === 'skipped';
+    for (const bound of ['min', 'max', 'note']) {
+      const field = form.elements['energy-' + bound + '-' + key];
+      field.value = ''; field.disabled = disabled;
+    }
+  }
+  if (key || changed.name === 'caloriesKcal') form.elements['energy-complete'].checked = false;
+  try {
+    const values = Object.fromEntries(new FormData(form));
+    const prior = state.records.find(r => r.date === selectedDate);
+    const meals = Object.fromEntries(['breakfast', 'lunch', 'dinner', 'snacks'].map(k => [k, values['meal-' + k]]));
+    const record = validateRecord({ ...prior, ...values, date: selectedDate, meals });
+    record.calorieEstimate = estimateFromForm(record, values, prior?.calorieEstimate);
+    const temporary = mergeHealthRecords([...state.records.filter(r => r.date !== selectedDate), record], health?.daily || []);
+    $('#energy-results').innerHTML = renderEnergyResults(energyOptions(record, temporary));
+    $('#energy-basis-body').innerHTML = renderEnergyBasis(energyOptions(record, temporary));
+    $('#energy-preview-error').textContent = '';
+  } catch (error) {
+    $('#energy-results').innerHTML = '<p class="hint">估算暂不能更新，请先核对输入。</p>';
+    $('#energy-preview-error').textContent = error.message;
+  }
+}
 document.addEventListener('input', event => {
   if (event.target.closest('#record-form, #profile-form')) setDirty(true);
+  if (event.target.closest('#record-form')) updateEnergyPreview(event.target);
   if (event.target.id === 'history-search') {
     query = event.target.value;
     historyPage = 1;
@@ -341,6 +379,7 @@ document.addEventListener('input', event => {
 });
 document.addEventListener('change', async event => {
   const el = event.target;
+  if (el.closest('#record-form') && (el.tagName === 'SELECT' || el.type === 'checkbox')) { setDirty(true); updateEnergyPreview(el); }
   if (el.id === 'record-date') {
     const date = el.value;
     if (date && date >= '2000-01-01' && date <= today && await leaveDirty()) { selectedDate = date; setDirty(false); render(); }
@@ -361,6 +400,11 @@ document.addEventListener('click', async event => {
   const action = el.dataset.action;
   try {
     if (action === 'today') return await navigate('record', today);
+    if (action === 'public-csv') {
+      const url = URL.createObjectURL(new Blob([recordsCSV(records)], { type: 'text/csv;charset=utf-8' }));
+      const link = document.createElement('a'); link.href = url; link.download = 'steady-arrival-public.csv'; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000); return;
+    }
     if (action === 'edit-date') return await navigate('record', el.dataset.date);
     if (action === 'range') { chartDays = Number(el.dataset.days); render(); return; }
     if (action === 'clear-filters') { query = ''; fromDate = ''; toDate = ''; historyPage = 1; render(); return; }
@@ -369,7 +413,7 @@ document.addEventListener('click', async event => {
       $('#history-table').innerHTML = table(); return;
     }
     if (action === 'refresh') {
-      if (await leaveDirty()) { await load(); render(); toast('已读取最新本地记录'); }
+      if (await leaveDirty()) { await load(); render(); toast(publicMode ? '已读取最新公开快照' : '已读取最新本地记录'); }
       return;
     }
     if (action === 'delete-date') {
@@ -421,9 +465,16 @@ document.addEventListener('visibilitychange', async () => {
 document.querySelectorAll('[data-icon]').forEach(el => el.innerHTML = icon(el.dataset.icon));
 try {
   await load();
+  if (publicMode) {
+    $('.local-label').textContent = '真实记录 · 公开分享';
+    $('.breadcrumb > span').textContent = '公开成长记录';
+    $('.nav-caption').textContent = '一起见证长期改变';
+  }
+  const requestedDate = new URLSearchParams(location.search).get('date');
+  if (isDate(requestedDate) && requestedDate >= '2000-01-01' && requestedDate <= today) selectedDate = requestedDate;
   view = titles[location.hash.slice(1)] ? location.hash.slice(1) : 'overview';
   render();
 } catch (error) {
   $('#save-status').textContent = '连接未完成';
-  main.innerHTML = '<div class="fatal-error">' + icon('activity') + '<h1>暂时打不开记录</h1><p>' + esc(error.message) + '</p><p>请先启动本地程序，再刷新页面。已有数据不会被空白覆盖。</p><button class="button primary" data-action="refresh">重试读取</button></div>';
+  main.innerHTML = '<div class="fatal-error">' + icon('activity') + '<h1>暂时打不开记录</h1><p>' + esc(error.message) + '</p><p>' + (publicMode ? '请稍后刷新公开页面。' : '请先启动本地程序，再刷新页面。已有数据不会被空白覆盖。') + '</p><button class="button primary" data-action="refresh">重试读取</button></div>';
 }

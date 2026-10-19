@@ -5,6 +5,7 @@ import path from 'node:path';
 import { once } from 'node:events';
 import { createServer, ROOT } from '../server.mjs';
 import { blankState } from '../scripts/setup.mjs';
+import { foodFingerprint } from '../dist/energy.js';
 
 test('API persists records, protects revisions, imports, exports and blocks cross-origin writes', async t => {
   const parent = path.join(ROOT, 'tests', '.tmp');
@@ -30,11 +31,14 @@ test('API persists records, protects revisions, imports, exports and blocks cros
   const initial = await response.json();
   assert.equal(initial.records.length, 0);
   const record = { date: '2026-01-01', weightKg: 75, notes: '<script>alert(1)</script>', meals: { dinner: 'Synthetic test meal' } };
+  record.calorieEstimate = { method: 'model', meals: { dinner: { minKcal: 450, maxKcal: 650, basedOn: record.meals.dinner, source: 'assistant', note: 'Synthetic portion assumption' } }, complete: true, completeFor: foodFingerprint(record) };
   response = await request('/api/records/2026-01-01', 'PUT', { revision: 1, record });
   assert.equal(response.status, 200);
   const saved = await response.json();
   assert.equal(saved.revision, 2);
   assert.equal(saved.records[0].weightKg, 75);
+  assert.equal(saved.records[0].calorieEstimate.meals.dinner.maxKcal, 650);
+  assert.equal((await (await request('/api/state', 'GET')).json()).records[0].calorieEstimate.completeFor, foodFingerprint(record));
   assert.equal(JSON.parse(await readFile(file, 'utf8')).records.length, 1);
   assert.equal(JSON.parse(await readFile(path.join(folder, 'tracker.previous.json'), 'utf8')).records.length, 0);
   response = await request('/api/records/2026-01-01', 'PUT', { revision: 1, record });
@@ -62,7 +66,7 @@ test('API persists records, protects revisions, imports, exports and blocks cros
   response = await request('/api/import', 'POST', { revision: 5, data: { schemaVersion: 1, records: [{ date: '2026-02-30' }] }, mode: 'replace' });
   assert.equal(response.status, 400);
   assert.equal(await readFile(file, 'utf8'), lastGood);
-  for (const route of ['/', '/app.js', '/domain.js', '/styles.css', '/favicon.svg']) {
+  for (const route of ['/', '/app.js', '/domain.js', '/charts.js', '/energy.js', '/energy-ui.js', '/styles.css', '/favicon.svg', '/assets/lean-club-simplified.png', '/assets/lean-club-traditional.png']) {
     response = await request(route, 'GET');
     assert.equal(response.status, 200, route);
     assert.ok(response.headers.get('content-security-policy').includes("default-src 'self'"));

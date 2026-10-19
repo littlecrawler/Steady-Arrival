@@ -1,4 +1,4 @@
-# Local health records and exports must never enter Git history.
+# Keep full local records/exports out of Git. The approved public/progress.json is tracked.
 /data/
 /imports/
 /导出/

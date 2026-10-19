@@ -1,5 +1,14 @@
+import { validateCalorieEstimate } from './energy.js';
 export const TIME_ZONE = 'Asia/Hong_Kong';
 export const APP_ID = 'steady-arrival';
+export const IMPORTED_SOURCE = 'Apple 健康导入';
+export function displaySource(value, fallback = '记录') {
+  if (!value) return fallback;
+  return ['手动记录', '对话记录'].includes(value) ? value : IMPORTED_SOURCE;
+}
+export function displaySources(sources = {}) {
+  return Object.fromEntries(Object.entries(sources).map(([key, value]) => [key, displaySource(value)]));
+}
 export const NUMBER_FIELDS = {
   weightKg: [25, 400], waistCm: [30, 250], bodyFatPct: [2, 70],
   caloriesKcal: [0, 12000], proteinG: [0, 600], steps: [0, 100000],
@@ -39,7 +48,7 @@ export function numberOrNull(value) {
   return Number(value);
 }
 export function mergeHealthRecords(manual, health = []) {
-  const map = new Map(health.map(day => [day.date, { ...day, meals: {}, sources: { ...(day.sources || {}) }, imported: true }]));
+  const map = new Map(health.map(day => [day.date, { ...day, meals: {}, sources: Object.fromEntries(Object.keys(day.sources || {}).map(key => [key, IMPORTED_SOURCE])), imported: true }]));
   for (const row of manual) {
     const combined = map.get(row.date) || { date: row.date, sources: {} };
     for (const [key, value] of Object.entries(row)) {
@@ -90,6 +99,7 @@ export function validateRecord(raw, today = localDate(), { allowFuture = false }
   clean.notes = textValue(raw.notes, 4000);
   clean.exerciseNotes = textValue(raw.exerciseNotes, 2000);
   clean.source = raw.source === 'chat' ? 'chat' : 'manual';
+  clean.calorieEstimate = validateCalorieEstimate(raw.calorieEstimate);
   return clean;
 }
 export function validateProfile(raw) {
@@ -186,6 +196,6 @@ export function recordsCSV(records) {
     ['设备运动时段分钟', 'deviceWorkoutMinutes'], ['数据来源', 'dataSources']);
   return '\uFEFF' + [columns.map(c => csvCell(c[0])).join(','),
     ...[...records].sort((a, b) => a.date.localeCompare(b.date)).map(r => columns.map(c =>
-      csvCell(c[1] === 'dataSources' ? JSON.stringify(r.sources || {}) : MEAL_KEYS.includes(c[1]) ? r.meals?.[c[1]] : r[c[1]])).join(','))
+      csvCell(c[1] === 'dataSources' ? JSON.stringify(displaySources(r.sources || {})) : MEAL_KEYS.includes(c[1]) ? r.meals?.[c[1]] : r[c[1]])).join(','))
   ].join('\r\n');
 }

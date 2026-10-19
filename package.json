@@ -6,11 +6,15 @@
   "description": "稳步到站：本地个人体重与生活记录",
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test tests/domain.test.mjs tests/server.test.mjs",
+    "test": "node --test tests/domain.test.mjs tests/server.test.mjs tests/public.test.mjs tests/charts.test.mjs tests/energy.test.mjs",
     "test:import": "python tests/import_health_test.py -v",
     "import:health": "python scripts/import_apple_health.py",
     "demo": "node scripts/demo.mjs",
+    "export:public": "node scripts/export-public.mjs",
+    "build:public": "node scripts/build-public.mjs",
     "check:privacy": "node scripts/check-private-files.mjs"
   },
-  "engines": { "node": ">=20.19" }
+  "engines": {
+    "node": ">=20.19"
+  }
 }

@@ -46,3 +46,18 @@ test('weekly routine has two strength and two cardio sessions; Sunday optional',
   assert.deepEqual(plans.map(p => p.type), ['strength', 'cardio', 'rest', 'strength', 'rest', 'cardio', 'walk']);
   assert.equal(plans[6].optional, true);
 });
+
+test('device source names stay in the local import and do not enter merged display or CSV labels', () => {
+  const privateName = "Synthetic Owner's iPhone";
+  const imported = [{ date: '2026-10-18', weightKg: 80, steps: 1234, sources: { weightKg: 'Synthetic private scale', steps: privateName } }];
+  const original = structuredClone(imported);
+  const rows = mergeHealthRecords([{ date: '2026-10-18', weightKg: 81, source: 'chat' }], imported);
+  assert.equal(rows[0].sources.steps, 'Apple 健康导入');
+  assert.equal(rows[0].sources.weightKg, '对话记录');
+  assert.equal(rows[0].weightKg, 81);
+  assert.equal(rows[0].steps, 1234);
+  assert.deepEqual(imported, original);
+  assert.ok(!JSON.stringify(rows[0].sources).includes(privateName));
+  assert.ok(!recordsCSV(imported).includes(privateName));
+  assert.match(recordsCSV(imported), /Apple 健康导入/);
+});

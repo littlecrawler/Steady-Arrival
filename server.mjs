@@ -15,7 +15,12 @@ const STATIC = new Map([
   ['/styles.css', ['styles.css', 'text/css; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/domain.js', ['domain.js', 'text/javascript; charset=utf-8']],
-  ['/favicon.svg', ['favicon.svg', 'image/svg+xml']]
+  ['/charts.js', ['charts.js', 'text/javascript; charset=utf-8']],
+  ['/energy.js', ['energy.js', 'text/javascript; charset=utf-8']],
+  ['/energy-ui.js', ['energy-ui.js', 'text/javascript; charset=utf-8']],
+  ['/favicon.svg', ['favicon.svg', 'image/svg+xml']],
+  ['/assets/lean-club-simplified.png', ['assets/lean-club-simplified.png', 'image/png']],
+  ['/assets/lean-club-traditional.png', ['assets/lean-club-traditional.png', 'image/png']]
 ]);
 const MAX_BODY = 6 * 1024 * 1024;
 function fail(message, status = 400) { const e = new Error(message); e.status = status; throw e; }
